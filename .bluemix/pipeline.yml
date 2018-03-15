@@ -123,7 +123,7 @@ stages:
       update_status
 
       # -----------------------------------------------------------
-      # 2. Install and instantiate the chaincode
+      # 2. Install the chaincode
       # -----------------------------------------------------------
       printf "\n\n --- Installing chaincode ---\n\n"
       curl -X POST \
@@ -142,16 +142,32 @@ stages:
       update_status
 
       # -----------------------------------------------------------
-      # 3. Instantiate the chaincode
+      # 3. Instantiate the chaincode - repeat if needed
       # -----------------------------------------------------------
-      printf "\n\n --- Instantiating chaincode on channel $CHANNEL ---\n\n"
-      curl -X POST \
-        "$API_HOST/api/v1/networks/$NETWORK_ID/channels/$CHANNEL/chaincode/instantiate" \
-        -H 'Cache-Control: no-cache' \
-        -H 'Content-Type: application/json' \
-        -u $API_KEY:$API_SECRET \
-        -d '{"chaincode_id":"'"$CF_APP"'", "chaincode_version":"'"$TIMESTAMP"'", "chaincode_arguments":"[\"12345\"]"}' \
-        --connect-timeout 120
+      i=0
+      while [[ "$INSTANTIATED" != "ok" && "$i" -lt "3" ]]
+      do
+        printf "\n\n --- Instantiating chaincode on channel $CHANNEL (attempt $[$i+1]) ---\n\n"
+        sleep $[$i*6+1]s
+        INSTANTIATE_RESP=$(curl -X POST \
+          "$API_HOST/api/v1/networks/$NETWORK_ID/channels/$CHANNEL/chaincode/instantiate" \
+          -H 'Cache-Control: no-cache' \
+          -H 'Content-Type: application/json' \
+          -u $API_KEY:$API_SECRET \
+          -d '{"chaincode_id":"'"$CF_APP"'", "chaincode_version":"'"$TIMESTAMP"'", "chaincode_arguments":"[\"12345\"]"}' \
+          --connect-timeout 180)
+        echo "$INSTANTIATE_RESP" | jq . || true
+        INSTANTIATED=$(echo "$INSTANTIATE_RESP" | jq '.message' -r)
+        i=$[$i+1]
+      done
+      if [ "$INSTANTIATED" != "ok" ]; then
+        echo "$INSTANTIATE_RESP"
+        echo "Could not instantiate the chaincode... check peer logs"
+        exit 1;
+      else
+        echo "Instantiate was successful, congrats"
+      fi
+
       export COMPLETED_STEP="3"
       update_status
 
