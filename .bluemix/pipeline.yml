@@ -29,8 +29,6 @@ stages:
       #!/bin/bash
       trap 'detect_exit' 0 1 2 3 6
 
-      export IBP_NAME="ibm-blockchain-5-dev"
-      export IBP_PLAN="ibm-blockchain-plan-v1-starter-dev"
       export VCAP_KEY_NAME="marbles_tc_creds"
       export CHANNEL="defaultchannel"
       export TIMESTAMP=$(date +%s)
@@ -78,14 +76,6 @@ stages:
       # -----------------------------------------------------------
       printf "\n --- Testing if the script has what it needs ---\n"
       export SCRIPT_ERROR="nope"
-        if [ "$IBP_NAME" == "" ]; then
-        echo "Error - bad script setup - IBP_NAME was not provided (IBM Blockchain service name)"
-        export SCRIPT_ERROR="yep"
-      fi
-      if [ "$IBP_PLAN" == "" ]; then
-        echo "Error - bad script setup - IBP_PLAN was not provided (IBM Blockchain service's plan name)"
-        export SCRIPT_ERROR="yep"
-      fi
       if [ "$VCAP_KEY_NAME" == "" ]; then
         echo "Error - bad script setup - VCAP_KEY_NAME was not provided (Bluemix service credential key name)"
         export SCRIPT_ERROR="yep"
@@ -114,7 +104,6 @@ stages:
       # 1. Create service creds for the service instance
       # -----------------------------------------------------------
       printf "\n --- Creating service credentials for your IBM Blockchain Platform service ---\n"
-      #cf create-service ${IBP_NAME} ${IBP_PLAN} "${SERVICE_INSTANCE_NAME}"
       cf delete-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} -f || true                    # remove an old key if it exists (stale)
       cf create-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} -c '{"msp_id":"PeerOrg1"}'    # create a new/updated key
 
@@ -148,7 +137,7 @@ stages:
         -F 'files[]=@./chaincode/src/marbles/write_ledger.go' \
         -F chaincode_id=$CF_APP \
         -F chaincode_version=$TIMESTAMP \
-        --connect-timeout 30
+        --connect-timeout 60
       export COMPLETED_STEP="2"
       update_status
 
@@ -172,6 +161,7 @@ stages:
       printf "\n\n --- Get the connection profile ---\n\n"
       export CONNECTION_PROFILE=$(curl -X GET \
         "$API_HOST/api/v1/networks/$NETWORK_ID/connection_profile" \
+        -H 'Content-Type: application/json' \
         -u $API_KEY:$API_SECRET\
         --connect-timeout 60)
       #echo "got connection profile $CONNECTION_PROFILE"      # uncomment if you are okay with logging your connection profile
