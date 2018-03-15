@@ -30,7 +30,7 @@ stages:
       trap 'detect_exit' 0 1 2 3 6
 
       export VCAP_KEY_NAME="marbles_tc_creds"
-      export CHANNEL="defaultchannel"
+      export CHANNEL_ID="defaultchannel"
       export TIMESTAMP=$(date +%s)
       export APP_URL="unknown_yet"                    # we correct this later
 
@@ -53,8 +53,7 @@ stages:
 
       update_status()
       {
-        echo "Updating Deployment Status - ${NETWORK_ID}"
-        echo '{"app": "'"$CF_APP"'", "url": "'"$APP_URL"'", "status": '$COMPLETED_STEP'}'
+        echo "Updating Sample's Deployment Status - network id: ${NETWORK_ID}, app: $CF_APP, status: $COMPLETED_STEP"
         curl -X PUT -s -S\
           "$API_HOST/api/v1/networks/$NETWORK_ID/sample/marbles" \
           -H 'Cache-Control: no-cache' \
@@ -88,8 +87,8 @@ stages:
         echo "Error - bad script setup - CF_APP was not provided (Marbles application name)"
         export SCRIPT_ERROR="yep"
       fi
-      if [ "$CHANNEL" == "" ]; then
-        echo "Error - bad script setup - CHANNEL was not provided (name of the channel to use)"
+      if [ "$CHANNEL_ID" == "" ]; then
+        echo "Error - bad script setup - CHANNEL_ID was not provided (name of the channel to use)"
         export SCRIPT_ERROR="yep"
       fi
       if [ "$SCRIPT_ERROR" == "yep" ]; then
@@ -142,15 +141,15 @@ stages:
       update_status
 
       # -----------------------------------------------------------
-      # 3. Instantiate the chaincode - repeat if needed
+      # 3. Instantiate the chaincode - repeat 3x if needed
       # -----------------------------------------------------------
       i=0
       while [[ "$INSTANTIATED" != "ok" && "$i" -lt "3" ]]
       do
-        printf "\n\n --- Instantiating chaincode on channel $CHANNEL (attempt $[$i+1]) ---\n\n"
+        printf "\n\n --- Instantiating chaincode on channel $CHANNEL_ID (attempt $[$i+1]) ---\n\n"
         sleep $[$i*6+1]s
         INSTANTIATE_RESP=$(curl -X POST \
-          "$API_HOST/api/v1/networks/$NETWORK_ID/channels/$CHANNEL/chaincode/instantiate" \
+          "$API_HOST/api/v1/networks/$NETWORK_ID/channels/$CHANNEL_ID/chaincode/instantiate" \
           -H 'Cache-Control: no-cache' \
           -H 'Content-Type: application/json' \
           -u $API_KEY:$API_SECRET \
@@ -160,6 +159,7 @@ stages:
         INSTANTIATED=$(echo "$INSTANTIATE_RESP" | jq '.message' -r)
         i=$[$i+1]
       done
+
       if [ "$INSTANTIATED" != "ok" ]; then
         echo "$INSTANTIATE_RESP"
         echo "Could not instantiate the chaincode... check peer logs"
@@ -172,14 +172,29 @@ stages:
       update_status
 
       # -----------------------------------------------------------
-      # 4. Get connection profile
+      # 4. Get connection profile - repeat 3x in case of connection resets
       # -----------------------------------------------------------
-      printf "\n\n --- Get the connection profile ---\n\n"
-      export CONNECTION_PROFILE=$(curl -X GET \
-        "$API_HOST/api/v1/networks/$NETWORK_ID/connection_profile" \
-        -H 'Content-Type: application/json' \
-        -u $API_KEY:$API_SECRET\
-        --connect-timeout 60)
+      i=0
+      while [[ "$CP_CHANNEL_ID" != "membership_valid" && "$i" -lt "3" ]]
+      do
+        printf "\n\n --- Get the connection profile (attempt $[$i+1]) ---\n\n"
+        sleep $[$i*8+1]s
+        export CONNECTION_PROFILE=$(curl -X GET \
+                  "$API_HOST/api/v1/networks/$NETWORK_ID/connection_profile" \
+                  -H 'Content-Type: application/json' \
+                  -u $API_KEY:$API_SECRET\
+                  --connect-timeout 90)
+        CP_CHANNEL_ID=$(echo "$CONNECTION_PROFILE" | jq '.channels["'$CHANNEL_ID'"]["x-status"]' -r)
+        i=$[$i+1]
+      done
+
+      if [ "$CP_CHANNEL_ID" != "membership_valid" ]; then
+        echo "Error - Connection Profile does not look healthy. Channel '$CHANNEL_ID' does not exist"
+        exit 1;
+      else
+        echo "Connection Profile looks great. Has channel '$CHANNEL_ID'"
+      fi
+
       #echo "got connection profile $CONNECTION_PROFILE"      # uncomment if you are okay with logging your connection profile
       export COMPLETED_STEP="4"
       update_status
@@ -189,11 +204,14 @@ stages:
       # -----------------------------------------------------------
       printf "\n --- Creating the Marbles application ---\n"
       cf push $CF_APP --no-start                            # don't start yet, wait for binding
+
       echo "Creating env variables for mables..."
       cf set-env $CF_APP CONNECTION_PROFILE "$CONNECTION_PROFILE" > /dev/null
       cf set-env $CF_APP CHAINCODE_ID $CF_APP               # pass these to the app so we know which one to use
       cf set-env $CF_APP CHAINCODE_VERSION $TIMESTAMP
+      cf set-env $CF_APP CHANNEL_ID $CHANNEL_ID
       export APP_URL=$(cf app $CF_APP | grep -Po "(?<=routes:)\s*\S*")
+
       printf "\n --- Binding the IBM Blockchain Platform service to Marbles ---\n"
       cf bind-service $CF_APP "${SERVICE_INSTANCE_NAME}" -c "{\"permissions\":\"read-only\"}"   # bind marbles to the service
 
