@@ -17,6 +17,10 @@ stages:
   - name: CLOUD_REGION_ID
     value: '{{tc_region}}'
     type: text
+  - name: MSP_ID
+    value: '{{msp_id}}'
+    type: text
+
   jobs:
   - name: deploy-marbles-app
     type: deployer
@@ -31,8 +35,11 @@ stages:
 
       export VCAP_KEY_NAME="marbles_tc_creds"
       export CHANNEL_ID="defaultchannel"
-      export TIMESTAMP=$(date +%s)
+      export CHAINCODE_ID="marbles_sample"
+      #export TIMESTAMP=$(date +%s)
       export APP_URL="unknown_yet"                    # we correct this later
+      GIT_CC_HASH=$(git ls-tree --abbrev=12 HEAD ./chaincode/src/marbles | cut -d ' ' -f 3 | cut -f 1)
+      GIT_HASH=$(git rev-parse HEAD)
 
       detect_exit()
       {
@@ -53,13 +60,13 @@ stages:
 
       update_status()
       {
-        echo "Updating Sample's Deployment Status - network id: ${NETWORK_ID}, app: $CF_APP, status: $COMPLETED_STEP"
+        printf "\nUpdating Sample's Deployment Status - network id: '${NETWORK_ID}', app: '$CF_APP', status: '$COMPLETED_STEP'\n"
         curl -X PUT -s -S\
           "$API_HOST/api/v1/networks/$NETWORK_ID/sample/marbles" \
           -H 'Cache-Control: no-cache' \
           -H 'Content-Type: application/json' \
           -u $API_KEY:$API_SECRET \
-          -d '{"app": "'"$CF_APP"'", "url": "'"$APP_URL"'", "completed_step": '$COMPLETED_STEP'}' \
+          -d '{"app": "'"$CF_APP"'", "url": "'"$APP_URL"'", "completed_step": '$COMPLETED_STEP', "meta": { "commit_hash": "'"$GIT_HASH"'", "cc_hash": "'"$GIT_CC_HASH"'" } }' \
           | ./jq '.' || true
       }
 
@@ -73,7 +80,15 @@ stages:
       # -----------------------------------------------------------
       # Test if everything we need is set
       # -----------------------------------------------------------
-      printf "\n --- Testing if the script has what it needs ---\n"
+      printf "\n\n\n"
+      echo " __  __               _      _             "
+      echo "|  \/  |             | |    | |            "
+      echo "| \  / |  __ _  _ __ | |__  | |  ___  ___  "
+      echo "| |\/| | / _  || '__|| '_ \ | | / _ \/ __| "
+      echo "| |  | || (_| || |   | |_) || ||  __/\__ \ "
+      echo "|_|  |_| \__,_||_|   |_.__/ |_| \___||___/ "
+
+      printf "\n\n --- Testing if the script has what it needs --- \n"
       export SCRIPT_ERROR="nope"
       if [ "$VCAP_KEY_NAME" == "" ]; then
         echo "Error - bad script setup - VCAP_KEY_NAME was not provided (Bluemix service credential key name)"
@@ -87,24 +102,26 @@ stages:
         echo "Error - bad script setup - CF_APP was not provided (Marbles application name)"
         export SCRIPT_ERROR="yep"
       fi
-      if [ "$CHANNEL_ID" == "" ]; then
-        echo "Error - bad script setup - CHANNEL_ID was not provided (name of the channel to use)"
+      if [ "$MSP_ID" == "" ]; then
+        echo "Error - bad script setup - MSP_ID was not provided (id of the org on the network to use)"
         export SCRIPT_ERROR="yep"
       fi
       if [ "$SCRIPT_ERROR" == "yep" ]; then
         exit 1
       else
-        echo "Using service instance name '${SERVICE_INSTANCE_NAME}'"
-        echo "Deploying Marbles in region ${CLOUD_REGION_ID}"
-        echo "All good"
+        echo "Using service instance name: '${SERVICE_INSTANCE_NAME}'"
+        echo "Deploying Marbles in region: ${CLOUD_REGION_ID}"
+        echo "Deploying Marbles as msp id: ${MSP_ID}"
+        echo "Deploying Marbles commit level: ${GIT_HASH}"
+        printf "\nAll good\n\n"
       fi
 
       # -----------------------------------------------------------
       # 1. Create service creds for the service instance
       # -----------------------------------------------------------
       printf "\n --- Creating service credentials for your IBM Blockchain Platform service ---\n"
-      cf delete-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} -f || true                    # remove an old key if it exists (stale)
-      cf create-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} -c '{"msp_id":"PeerOrg1"}'    # create a new/updated key
+      cf delete-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} -f || true               # remove an old key if it exists (stale)
+      cf create-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME}                          # create a new/updated key
 
       # -----------------------------------------------------------
       # Get service credentials into our file system (remove the first two lines from cf service-key output)
@@ -113,10 +130,10 @@ stages:
       cf service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} > ./config/temp.txt                # load the key
       tail -n +2 ./config/temp.txt > ./config/marbles_tc.json
       #cat ./config/marbles_tc.json -b             # uncomment this if you are okay with your service creds being logged
-      export API_HOST="$(cat ./config/marbles_tc.json | jq .$(cat ./config/marbles_tc.json | jq 'keys'[0] -r).url -r)"    # use the first entry
-      export API_KEY="$(cat ./config/marbles_tc.json | jq .$(cat ./config/marbles_tc.json | jq 'keys'[0] -r).key -r)"
-      export API_SECRET="$(cat ./config/marbles_tc.json | jq .$(cat ./config/marbles_tc.json | jq 'keys'[0] -r).secret -r)"
-      export NETWORK_ID="$(cat ./config/marbles_tc.json | jq .$(cat ./config/marbles_tc.json | jq 'keys'[0] -r).network_id -r)"
+      export API_HOST="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.url' -r)"    # use the msp id from the env var
+      export API_KEY="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.key' -r)"
+      export API_SECRET="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.secret' -r)"
+      export NETWORK_ID="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.network_id' -r)"
       echo "Using Network ID ${NETWORK_ID}, api host=$API_HOST, api key=$API_KEY"
       export COMPLETED_STEP="1"
       update_status
@@ -124,8 +141,10 @@ stages:
       # -----------------------------------------------------------
       # 2. Install the chaincode
       # -----------------------------------------------------------
-      printf "\n\n --- Installing chaincode ---\n\n"
-      curl -X POST \
+      printf "\n\n --- Installing chaincode ---\n"
+      echo "Chaincode ID: ${CHAINCODE_ID}"
+      printf "Chaincode Version: ${GIT_CC_HASH}\n\n"
+      INSTALL_RESP=$(curl -X POST \
         "$API_HOST/api/v1/networks/$NETWORK_ID/chaincode/install" \
         -H 'Cache-Control: no-cache' \
         -H 'content-type: multipart/form-data;' \
@@ -134,9 +153,23 @@ stages:
         -F 'files[]=@./chaincode/src/marbles/marbles.go' \
         -F 'files[]=@./chaincode/src/marbles/read_ledger.go' \
         -F 'files[]=@./chaincode/src/marbles/write_ledger.go' \
-        -F chaincode_id=$CF_APP \
-        -F chaincode_version=$TIMESTAMP \
-        --connect-timeout 60
+        -F chaincode_id=$CHAINCODE_ID \
+        -F chaincode_version=$GIT_CC_HASH \
+        --connect-timeout 60 || true)
+      printf "\nResp: $INSTALL_RESP\n"
+      INSTALLED=$(echo "$INSTALL_RESP" | jq '.message' -r || true)    # parse the install response for the "message" field
+
+      if [ "$INSTALLED" != "ok" ]; then
+        if [[ $INSTALL_RESP = *"exists))"* ]]; then                            # this is ok
+          echo "Chaincode is already installed, good to go"
+        else                                                                   # this is a problem
+          echo "Could not install the chaincode... check log above and your peer's logs"
+          exit 1;
+        fi
+      else
+        echo "Install was successful, woo"                                     # this is ok
+      fi
+
       export COMPLETED_STEP="2"
       update_status
 
@@ -144,7 +177,7 @@ stages:
       # 3. Instantiate the chaincode - repeat 3x if needed
       # -----------------------------------------------------------
       i=0
-      while [[ "$INSTANTIATED" != "ok" && "$i" -lt "3" ]]
+      while [[ "$INSTANTIATED" != "ok" && "$i" -lt "3" && $INSTANTIATE_RESP != *"version already exists for chaincode"* ]]
       do
         printf "\n\n --- Instantiating chaincode on channel $CHANNEL_ID (attempt $[$i+1]) ---\n\n"
         sleep $[$i*6+1]s
@@ -153,19 +186,22 @@ stages:
           -H 'Cache-Control: no-cache' \
           -H 'Content-Type: application/json' \
           -u $API_KEY:$API_SECRET \
-          -d '{"chaincode_id":"'"$CF_APP"'", "chaincode_version":"'"$TIMESTAMP"'", "chaincode_arguments":"[\"12345\"]"}' \
-          --connect-timeout 180)
-        echo "$INSTANTIATE_RESP" | jq . || true
-        INSTANTIATED=$(echo "$INSTANTIATE_RESP" | jq '.message' -r)
+          -d '{"chaincode_id":"'"$CHAINCODE_ID"'", "chaincode_version":"'"$GIT_CC_HASH"'", "chaincode_arguments":"[\"12345\"]"}' \
+          --connect-timeout 180 || true)
+        printf "\nResp: $INSTANTIATE_RESP\n"
+        INSTANTIATED=$(echo "$INSTANTIATE_RESP" | jq '.message' -r || true)  # parse the instantiate response for the "message" field
         i=$[$i+1]
       done
 
       if [ "$INSTANTIATED" != "ok" ]; then
-        echo "$INSTANTIATE_RESP"
-        echo "Could not instantiate the chaincode... check peer logs"
-        exit 1;
+        if [[ $INSTANTIATE_RESP = *"version already exists for chaincode"* ]]; then   # this is ok
+          echo "Chaincode is already instantiated, good to go"
+        else                                                                          # this is a problem
+          echo "Could not instantiate the chaincode... check log above and your peer's logs"
+          exit 1;
+        fi
       else
-        echo "Instantiate was successful, congrats"
+        echo "Instantiate was successful, congrats"                                   # this is ok
       fi
 
       export COMPLETED_STEP="3"
@@ -207,9 +243,10 @@ stages:
 
       echo "Creating env variables for mables..."
       cf set-env $CF_APP CONNECTION_PROFILE "$CONNECTION_PROFILE" > /dev/null
-      cf set-env $CF_APP CHAINCODE_ID $CF_APP               # pass these to the app so we know which one to use
-      cf set-env $CF_APP CHAINCODE_VERSION $TIMESTAMP
+      cf set-env $CF_APP CHAINCODE_ID $CHAINCODE_ID               # pass these to the app so we know which one to use
+      cf set-env $CF_APP CHAINCODE_VERSION $GIT_CC_HASH
       cf set-env $CF_APP CHANNEL_ID $CHANNEL_ID
+      cf set-env $CF_APP MSP_ID $MSP_ID
       export APP_URL=$(cf app $CF_APP | grep -Po "(?<=routes:)\s*\S*")
 
       printf "\n --- Binding the IBM Blockchain Platform service to Marbles ---\n"
