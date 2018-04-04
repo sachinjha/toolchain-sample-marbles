@@ -177,6 +177,7 @@ stages:
       # 3. Instantiate the chaincode - repeat 3x if needed
       # -----------------------------------------------------------
       i=0
+      ENDORSEMENT_POLICY="{\"identities\": [ { \"role\": { \"name\": \"member\", \"mspId\": \"org1\" }},{ \"role\": { \"name\": \"member\", \"mspId\": \"org2\" }}],\"policy\": {\"2-of\": [{ \"signed-by\": 0 }, { \"signed-by\": 1 }]}}"
       while [[ "$INSTANTIATED" != "ok" && "$i" -lt "3" && $INSTANTIATE_RESP != *"version already exists for chaincode"* ]]
       do
         printf "\n\n --- Instantiating chaincode on channel $CHANNEL_ID (attempt $[$i+1]) ---\n\n"
@@ -186,7 +187,7 @@ stages:
           -H 'Cache-Control: no-cache' \
           -H 'Content-Type: application/json' \
           -u $API_KEY:$API_SECRET \
-          -d '{"chaincode_id":"'"$CHAINCODE_ID"'", "chaincode_version":"'"$GIT_CC_HASH"'", "chaincode_arguments":"[\"12345\"]"}' \
+          -d '{"endorsement-policy":${ENDORSEMENT_POLICY}, "chaincode_id":"'"$CHAINCODE_ID"'", "chaincode_version":"'"$GIT_CC_HASH"'", "chaincode_arguments":"[\"12345\"]"}' \
           --connect-timeout 180 || true)
         printf "\nResp: $INSTANTIATE_RESP\n"
         INSTANTIATED=$(echo "$INSTANTIATE_RESP" | jq '.message' -r || true)  # parse the instantiate response for the "message" field
